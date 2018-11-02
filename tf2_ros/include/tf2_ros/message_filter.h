@@ -37,23 +37,25 @@
 #include <string>
 #include <list>
 #include <vector>
-#include <boost/function.hpp>
-#include <boost/bind.hpp>
+//#include <boost/function.hpp>
+//#include <boost/bind.hpp>
 #include <memory>
-#include <boost/thread.hpp>
+//#include <boost/thread.hpp>
 
 #include <message_filters/connection.h>
+#include <message_filters/message_traits.h>
 #include <message_filters/simple_filter.h>
-
+#include <rclcpp/rclcpp.hpp>
+/*
 #include <ros/node_handle.h>
 #include <ros/callback_queue_interface.h>
 #include <ros/init.h>
-
+*/
 #define TF2_ROS_MESSAGEFILTER_DEBUG(fmt, ...) \
-  ROS_DEBUG_NAMED("message_filter", std::string(std::string("MessageFilter [target=%s]: ") + std::string(fmt)).c_str(), getTargetFramesString().c_str(), __VA_ARGS__)
+  RCUTILS_LOG_DEBUG_NAMED("message_filter", std::string(std::string("MessageFilter [target=%s]: ") + std::string(fmt)).c_str(), getTargetFramesString().c_str(), __VA_ARGS__)
 
 #define TF2_ROS_MESSAGEFILTER_WARN(fmt, ...) \
-  ROS_WARN_NAMED("message_filter", std::string(std::string("MessageFilter [target=%s]: ") + std::string(fmt)).c_str(), getTargetFramesString().c_str(), __VA_ARGS__)
+  RCUTILS_LOG_DEBUG_NAMED("message_filter", std::string(std::string("MessageFilter [target=%s]: ") + std::string(fmt)).c_str(), getTargetFramesString().c_str(), __VA_ARGS__)
 
 namespace tf2_ros
 {
@@ -105,8 +107,8 @@ class MessageFilter : public MessageFilterBase, public message_filters::SimpleFi
 {
 public:
   using MConstPtr = std::shared_ptr<M const>;
-  typedef ros::MessageEvent<M const> MEvent;
-  typedef boost::function<void(const MConstPtr&, FilterFailureReason)> FailureCallback;
+  typedef message_filters::MessageEvent<M const> MEvent;
+  typedef std::function<void(const MConstPtr&, FilterFailureReason)> FailureCallback;
   typedef boost::signals2::signal<void(const MConstPtr&, FilterFailureReason)> FailureSignal;
 
   // If you hit this assert your message does not have a header, or does not have the HasHeader trait defined for it
@@ -244,7 +246,7 @@ public:
 
     target_frames_.resize(target_frames.size());
     std::transform(target_frames.begin(), target_frames.end(), target_frames_.begin(), this->stripSlash);
-    expected_success_count_ = target_frames_.size() + (time_tolerance_.isZero() ? 0 : 1);
+    expected_success_count_ = target_frames_.size() * (time_tolerance_.count() ? 1 : 2);
 
     std::stringstream ss;
     for (V_string::iterator it = target_frames_.begin(); it != target_frames_.end(); ++it)
@@ -269,7 +271,7 @@ public:
   {
     std::unique_lock<std::mutex> lock(target_frames_mutex_);
     time_tolerance_ = tolerance;
-    expected_success_count_ = target_frames_.size() + (time_tolerance_.isZero() ? 0 : 1);
+    expected_success_count_ = target_frames_.size() * (time_tolerance_.count() ? 1 : 2);
   }
 
   /**
@@ -277,12 +279,17 @@ public:
    */
   void clear()
   {
-    boost::unique_lock< boost::shared_mutex > unique_lock(messages_mutex_);
+    std::unique_lock< std::unique_mutex > unique_lock(messages_mutex_);
 
     TF2_ROS_MESSAGEFILTER_DEBUG("%s", "Cleared");
 
     bc_.removeTransformableCallback(callback_handle_);
-    callback_handle_ = bc_.addTransformableCallback(boost::bind(&MessageFilter::transformable, this, _1, _2, _3, _4, _5));
+    callback_handle_ = bc_.addTransformableCallback(boost::bind(&MessageFilter::transformable,
+			                            this, std::placeholders::_1,
+						    std::placeholders::_2,
+						    std::placeholders::_3,
+						    std::placeholders::_4,
+						    std::placeholders::_5));
 
     messages_.clear();
     message_count_ = 0;
@@ -297,7 +304,7 @@ public:
       return;
     }
 
-    namespace mt = ros::message_traits;
+    namespace mt = message_filters::message_traits;
     const MConstPtr& message = evt.getMessage();
     std::string frame_id = stripSlash(mt::FrameId<M>::value(*message));
     builtin_interfaces::msg::Time stamp = mt::TimeStamp<M>::value(*message);
@@ -339,7 +346,7 @@ public:
           info.handles.push_back(handle);
         }
 
-        if (!time_tolerance_.isZero())
+        if (time_tolerance_.count())
         {
           handle = bc_.addTransformableRequest(callback_handle_, target_frame, frame_id, stamp + time_tolerance_);
           if (handle == 0xffffffffffffffffULL) // never transformable
@@ -375,8 +382,10 @@ public:
 
         ++dropped_message_count_;
         const MessageInfo& front = messages_.front();
+	/*
         TF2_ROS_MESSAGEFILTER_DEBUG("Removed oldest message because buffer is full, count now %d (frame_id=%s, stamp=%f)", message_count_,
-                                (mt::FrameId<M>::value(*front.event.getMessage())).c_str(), mt::TimeStamp<M>::value(*front.event.getMessage()).toSec());
+                                (mt::FrameId<M>::value(*front.event.getMessage())).c_str(), mt::TimeStamp<M>::value(*front.event.getMessage()).seconds());
+	*/
 
         V_TransformableRequestHandle::const_iterator it = front.handles.begin();
         V_TransformableRequestHandle::const_iterator end = front.handles.end();
@@ -404,7 +413,7 @@ public:
       ++message_count_;
     }
 
-    TF2_ROS_MESSAGEFILTER_DEBUG("Added message in frame %s at time %.3f, count now %d", frame_id.c_str(), stamp.toSec(), message_count_);
+    TF2_ROS_MESSAGEFILTER_DEBUG("Added message in frame %s at time %.3f, count now %d", frame_id.c_str(), stamp.seconds(), message_count_);
 
     ++incoming_message_count_;
   }
@@ -416,10 +425,10 @@ public:
    */
   void add(const MConstPtr& message)
   {
-    boost::shared_ptr<std::map<std::string, std::string> > header(new std::map<std::string, std::string>);
+    std::shared_ptr<std::map<std::string, std::string> > header(new std::map<std::string, std::string>);
     (*header)["callerid"] = "unknown";
-    ros::WallTime n = ros::WallTime::now();
-    builtin_interfaces::msg::Time t(n.sec, n.nsec);
+    rclcpp::Time n = rclcpp::Clock::now();
+    builtin_interfaces::msg::Time t(n.sec, n.nanosec);
     add(MEvent(message, header, t));
   }
 
@@ -430,7 +439,7 @@ public:
   message_filters::Connection registerFailureCallback(const FailureCallback& callback)
   {
     std::unique_lock<std::mutex> lock(failure_signal_mutex_);
-    return message_filters::Connection(boost::bind(&MessageFilter::disconnectFailure, this, _1), failure_signal_.connect(callback));
+    return message_filters::Connection(std::bind(&MessageFilter::disconnectFailure, this, std::placeholders::_1), failure_signal_.connect(callback));
   }
 
   virtual void setQueueSize( uint32_t new_queue_size )
@@ -458,13 +467,18 @@ private:
     warned_about_empty_frame_id_ = false;
     expected_success_count_ = 1;
 
-    callback_handle_ = bc_.addTransformableCallback(boost::bind(&MessageFilter::transformable, this, _1, _2, _3, _4, _5));
+    callback_handle_ = bc_.addTransformableCallback(std::bind(&MessageFilter::transformable,
+			                                      this, std::placeholders::_1,
+							      std::placeholders::_2,
+							      std::placeholders::_3,
+							      std::placeholders::_4,
+							      std::placeholders::_5));
   }
 
   void transformable(tf2::TransformableRequestHandle request_handle, const std::string& target_frame, const std::string& source_frame,
                      builtin_interfaces::msg::Time time, tf2::TransformableResult result)
   {
-    namespace mt = ros::message_traits;
+    namespace mt = message_filters::message_traits;
 
     boost::upgrade_lock< boost::shared_mutex > lock(messages_mutex_);
 
@@ -514,7 +528,7 @@ private:
           break;
         }
 
-        if (!time_tolerance_.isZero())
+        if (time_tolerance_.count())
         {
           if (!bc_.canTransform(target, frame_id, stamp + time_tolerance_))
           {
@@ -533,7 +547,7 @@ private:
     boost::upgrade_to_unique_lock< boost::shared_mutex > uniqueLock(lock);
     if (can_transform)
     {
-      TF2_ROS_MESSAGEFILTER_DEBUG("Message ready in frame %s at time %.3f, count now %d", frame_id.c_str(), stamp.toSec(), message_count_ - 1);
+      TF2_ROS_MESSAGEFILTER_DEBUG("Message ready in frame %s at time %.3f, count now %d", frame_id.c_str(), stamp.seconds(), message_count_ - 1);
 
       ++successful_transform_count_;
 
@@ -544,7 +558,7 @@ private:
     {
       ++dropped_message_count_;
 
-      TF2_ROS_MESSAGEFILTER_DEBUG("Discarding message in frame %s at time %.3f, count now %d", frame_id.c_str(), stamp.toSec(), message_count_ - 1);
+      TF2_ROS_MESSAGEFILTER_DEBUG("Discarding message in frame %s at time %.3f, count now %d", frame_id.c_str(), stamp.seconds(), message_count_ - 1);
       messageDropped(info.event, filter_failure_reasons::Unknown);
     }
 
@@ -555,19 +569,19 @@ private:
   /**
    * \brief Callback that happens when we receive a message on the message topic
    */
-  void incomingMessage(const ros::MessageEvent<M const>& evt)
+  void incomingMessage(const message_filters::MessageEvent<M const>& evt)
   {
     add(evt);
   }
 
   void checkFailures()
   {
-    if (next_failure_warning_.isZero())
+    if (!next_failure_warning_.nanoseconds())
     {
-      next_failure_warning_ = ros::WallTime::now() + ros::WallDuration(15);
+      next_failure_warning_ = rclcpp::Clock::now() + rclcpp::Duration(15,0);
     }
 
-    if (ros::WallTime::now() >= next_failure_warning_)
+    if (rclcpp::Clock::now() >= next_failure_warning_)
     {
       if (incoming_message_count_ - message_count_ == 0)
       {
@@ -578,16 +592,17 @@ private:
       if (dropped_pct > 0.95)
       {
         TF2_ROS_MESSAGEFILTER_WARN("Dropped %.2f%% of messages so far. Please turn the [%s.message_notifier] rosconsole logger to DEBUG for more information.", dropped_pct*100, ROSCONSOLE_DEFAULT_NAME);
-        next_failure_warning_ = ros::WallTime::now() + ros::WallDuration(60);
+        next_failure_warning_ = rclcpp::Clock::now() + rclcpp::Duration(60,0);
 
         if ((double)failed_out_the_back_count_ / (double)dropped_message_count_ > 0.5)
         {
-          TF2_ROS_MESSAGEFILTER_WARN("  The majority of dropped messages were due to messages growing older than the TF cache time.  The last message's timestamp was: %f, and the last frame_id was: %s", last_out_the_back_stamp_.toSec(), last_out_the_back_frame_.c_str());
+          TF2_ROS_MESSAGEFILTER_WARN("  The majority of dropped messages were due to messages growing older than the TF cache time.  The last message's timestamp was: %f, and the last frame_id was: %s", last_out_the_back_stamp_.seconds(), last_out_the_back_frame_.c_str());
         }
       }
     }
   }
 
+  #if 0
   struct CBQueueCallback : public ros::CallbackInterface
   {
     CBQueueCallback(MessageFilter* filter, const MEvent& event, bool success, FilterFailureReason reason)
@@ -619,12 +634,17 @@ private:
     bool success_;
   };
 
+  #endif
+
   void messageDropped(const MEvent& evt, FilterFailureReason reason)
   {
     if (callback_queue_)
     {
+      #if 0
       ros::CallbackInterfacePtr cb(new CBQueueCallback(this, evt, false, reason));
       callback_queue_->addCallback(cb, (uint64_t)this);
+      #endif
+      TF2_ROS_MESSAGEFILTER_WARN("[TODO]: Add callback to callback queue of node")
     }
     else
     {
@@ -636,8 +656,11 @@ private:
   {
     if (callback_queue_)
     {
+      #if 0
       ros::CallbackInterfacePtr cb(new CBQueueCallback(this, evt, true, filter_failure_reasons::Unknown));
       callback_queue_->addCallback(cb, (uint64_t)this);
+      #endif
+      TF2_ROS_MESSAGEFILTER_WARN("[TODO]: Add callback to callback queue of node")
     }
     else
     {
@@ -701,10 +724,10 @@ private:
   uint64_t incoming_message_count_;
   uint64_t dropped_message_count_;
 
-  tf2::TimePoint last_out_the_back_stamp_;
+  rclcpp::Time last_out_the_back_stamp_;
   std::string last_out_the_back_frame_;
 
-  ros::WallTime next_failure_warning_;
+  rclcpp::Time next_failure_warning_;
 
   tf2::Duration time_tolerance_; ///< Provide additional tolerance on time for messages which are stamped but can have associated duration
 
@@ -713,7 +736,7 @@ private:
   FailureSignal failure_signal_;
   std::mutex failure_signal_mutex_;
 
-  ros::CallbackQueueInterface* callback_queue_;
+  //ros::CallbackQueueInterface* callback_queue_;
 };
 
 } // namespace tf2
