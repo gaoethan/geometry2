@@ -70,7 +70,7 @@ TEST(tf2_ros_message_filter, multiple_frames_and_time_tolerance)
   rclcpp::Clock::SharedPtr clock = std::make_shared<rclcpp::Clock>(RCL_SYSTEM_TIME);
   tf2_ros::Buffer buffer(clock);
   tf2_ros::TransformListener tfl(buffer);
-  tf2_ros::MessageFilter<geometry_msgs::msg::PointStamped> filter(buffer, "map", 10);
+  tf2_ros::MessageFilter<geometry_msgs::msg::PointStamped> filter(buffer, "map", 10, node);
   filter.connectInput(sub);
   filter.registerCallback(&filter_callback);
   // Register multiple target frames
@@ -79,7 +79,7 @@ TEST(tf2_ros_message_filter, multiple_frames_and_time_tolerance)
   frames.push_back("map");
   filter.setTargetFrames(frames);
   // Set a non-zero time tolerance
-  filter.setTolerance(tf2::durationFromSec(1.0));
+  filter.setTolerance(rclcpp::Duration(1,0));
 
   // Publish static transforms so the frame transformations will always be valid
   tf2_ros::StaticTransformBroadcaster tfb(node);
@@ -124,9 +124,8 @@ TEST(tf2_ros_message_filter, multiple_frames_and_time_tolerance)
   ASSERT_TRUE(filter_callback_fired);
 }
 
-int main(int argc, char **argv){
+int main(int argc, char **argv) {
   testing::InitGoogleTest(&argc, argv);
-  //ros::init(argc, argv, "tf2_ros_message_filter");
   rclcpp::init(argc, argv);
   return RUN_ALL_TESTS();
 }

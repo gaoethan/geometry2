@@ -60,31 +60,32 @@
 namespace tf2_ros
 {
 
-namespace filter_failure_reasons
-{
-enum FilterFailureReason
-{
-  /// The message buffer overflowed, and this message was pushed off the back of the queue, but the reason it was unable to be transformed is unknown.
-  Unknown,
-  /// The timestamp on the message is more than the cache length earlier than the newest data in the transform cache
-  OutTheBack,
-  /// The frame_id on the message is empty
-  EmptyFrameID,
-};
-}
-typedef filter_failure_reasons::FilterFailureReason FilterFailureReason;
+  namespace filter_failure_reasons
+  {
+    enum FilterFailureReason
+    {
+      /// The message buffer overflowed, and this message was pushed off the back of the queue, but the reason it was unable to be transformed is unknown.
+      Unknown,
+      /// The timestamp on the message is more than the cache length earlier than the newest data in the transform cache
+      OutTheBack,
+      /// The frame_id on the message is empty
+      EmptyFrameID,
+    };
+  }
 
-class MessageFilterBase
-{
-public:
-  typedef std::vector<std::string> V_string;
+  typedef filter_failure_reasons::FilterFailureReason FilterFailureReason;
 
-  virtual ~MessageFilterBase(){}
-  virtual void clear() = 0;
-  virtual void setTargetFrame(const std::string& target_frame) = 0;
-  virtual void setTargetFrames(const V_string& target_frames) = 0;
-  virtual void setTolerance(const tf2::Duration& tolerance) = 0;
-};
+  class MessageFilterBase
+  {
+    public:
+    typedef std::vector<std::string> V_string;
+
+    virtual ~MessageFilterBase(){}
+    virtual void clear() = 0;
+    virtual void setTargetFrame(const std::string& target_frame) = 0;
+    virtual void setTargetFrames(const V_string& target_frames) = 0;
+    virtual void setTolerance(const rclcpp::Duration& tolerance) = 0;
+  };
 
 /**
  * \brief Follows the patterns set by the message_filters package to implement a filter which only passes messages through once there is transform data available
@@ -102,14 +103,13 @@ tf::MessageFilter<MessageType> tf_filter(sub, tf_listener_, "/map", 10);
 tf_filter.registerCallback(&MyClass::myCallback, this);
 \endverbatim
  */
-template<class M>
-class MessageFilter : public MessageFilterBase, public message_filters::SimpleFilter<M>
-{
-public:
-  using MConstPtr = std::shared_ptr<M const>;
-  typedef message_filters::MessageEvent<M const> MEvent;
-  typedef std::function<void(const MConstPtr&, FilterFailureReason)> FailureCallback;
-  typedef boost::signals2::signal<void(const MConstPtr&, FilterFailureReason)> FailureSignal;
+  template<class M>
+  class MessageFilter : public MessageFilterBase, public message_filters::SimpleFilter<M>
+  {
+    public:
+      using MConstPtr = std::shared_ptr<M const>;
+      typedef message_filters::MessageEvent<M const> MEvent;
+      typedef std::function<void(const MConstPtr&, FilterFailureReason)> FailureCallback;
 
   // If you hit this assert your message does not have a header, or does not have the HasHeader trait defined for it
   // Actually, we need to check that the message has a header, or that it
@@ -125,15 +125,12 @@ public:
    * \param queue_size The number of messages to queue up before throwing away old ones.  0 means infinite (dangerous).
    * \param nh The NodeHandle whose callback queue we should add callbacks to
    */
-  MessageFilter(tf2::BufferCore& bc, const std::string& target_frame, uint32_t queue_size, const ros::NodeHandle& nh)
-  : bc_(bc)
-  , queue_size_(queue_size)
-  , callback_queue_(nh.getCallbackQueue())
-  {
-    init();
-
-    setTargetFrame(target_frame);
-  }
+      MessageFilter(tf2::BufferCore& bc, const std::string& target_frame, uint32_t queue_size, const rclcpp::Node::SharedPtr& node)
+      : bc_(bc), queue_size_(queue_size)
+      {
+        init();
+        setTargetFrame(target_frame);
+      }
 
   /**
    * \brief Constructor
@@ -144,601 +141,457 @@ public:
    * \param queue_size The number of messages to queue up before throwing away old ones.  0 means infinite (dangerous).
    * \param nh The NodeHandle whose callback queue we should add callbacks to
    */
-  template<class F>
-  MessageFilter(F& f, tf2::BufferCore& bc, const std::string& target_frame, uint32_t queue_size, const ros::NodeHandle& nh)
-  : bc_(bc)
-  , queue_size_(queue_size)
-  , callback_queue_(nh.getCallbackQueue())
-  {
-    init();
+      template<class F>
+      MessageFilter(F& f, tf2::BufferCore& bc, const std::string& target_frame, uint32_t queue_size, const rclcpp::Node::SharedPtr& node)
+      : bc_(bc), queue_size_(queue_size)
+      {
+        init();
+        setTargetFrame(target_frame);
+        connectInput(f);
+      }
 
-    setTargetFrame(target_frame);
-
-    connectInput(f);
-  }
-
-  /**
-   * \brief Constructor
-   *
-   * \param bc The tf2::BufferCore this filter should use
-   * \param target_frame The frame this filter should attempt to transform to.  To use multiple frames, pass an empty string here and use the setTargetFrames() function.
-   * \param queue_size The number of messages to queue up before throwing away old ones.  0 means infinite (dangerous).
-   * \param cbqueue The callback queue to add callbacks to.  If NULL, callbacks will happen from whatever thread either
-   *    a) add() is called, which will generally be when the previous filter in the chain outputs a message, or
-   *    b) tf2::BufferCore::setTransform() is called
-   */
-  MessageFilter(tf2::BufferCore& bc, const std::string& target_frame, uint32_t queue_size, ros::CallbackQueueInterface* cbqueue)
-  : bc_(bc)
-  , queue_size_(queue_size)
-  , callback_queue_(cbqueue)
-  {
-    init();
-
-    setTargetFrame(target_frame);
-  }
-
-  /**
-   * \brief Constructor
-   *
-   * \param f The filter to connect this filter's input to.  Often will be a message_filters::Subscriber.
-   * \param bc The tf2::BufferCore this filter should use
-   * \param target_frame The frame this filter should attempt to transform to.  To use multiple frames, pass an empty string here and use the setTargetFrames() function.
-   * \param queue_size The number of messages to queue up before throwing away old ones.  0 means infinite (dangerous).
-   * \param cbqueue The callback queue to add callbacks to.  If NULL, callbacks will happen from whatever thread either
-   *    a) add() is called, which will generally be when the previous filter in the chain outputs a message, or
-   *    b) tf2::BufferCore::setTransform() is called
-   */
-  template<class F>
-  MessageFilter(F& f, tf2::BufferCore& bc, const std::string& target_frame, uint32_t queue_size, ros::CallbackQueueInterface* cbqueue)
-  : bc_(bc)
-  , queue_size_(queue_size)
-  , callback_queue_(cbqueue)
-  {
-    init();
-
-    setTargetFrame(target_frame);
-
-    connectInput(f);
-  }
 
   /**
    * \brief Connect this filter's input to another filter's output.  If this filter is already connected, disconnects first.
    */
-  template<class F>
-  void connectInput(F& f)
-  {
-    message_connection_.disconnect();
-    message_connection_ = f.registerCallback(&MessageFilter::incomingMessage, this);
-  }
+      template<class F>
+      void connectInput(F& f)
+      {
+        message_connection_.disconnect();
+        message_connection_ = f.registerCallback(&MessageFilter::incomingMessage, this);
+      }
 
   /**
    * \brief Destructor
    */
-  ~MessageFilter()
-  {
-    message_connection_.disconnect();
+      ~MessageFilter()
+      {
+        message_connection_.disconnect();
+        clear();
 
-    clear();
-
-    TF2_ROS_MESSAGEFILTER_DEBUG("Successful Transforms: %llu, Discarded due to age: %llu, Transform messages received: %llu, Messages received: %llu, Total dropped: %llu",
+        TF2_ROS_MESSAGEFILTER_DEBUG("Successful Transforms: %llu, Discarded due to age: %llu, Transform messages received: %llu, Messages received: %llu, Total dropped: %llu",
                            (long long unsigned int)successful_transform_count_,
                            (long long unsigned int)failed_out_the_back_count_, (long long unsigned int)transform_message_count_, 
                            (long long unsigned int)incoming_message_count_, (long long unsigned int)dropped_message_count_);
-
-  }
+      }
 
   /**
    * \brief Set the frame you need to be able to transform to before getting a message callback
    */
-  void setTargetFrame(const std::string& target_frame)
-  {
-    V_string frames;
-    frames.push_back(target_frame);
-    setTargetFrames(frames);
-  }
+      void setTargetFrame(const std::string& target_frame)
+      {
+        V_string frames;
+        frames.push_back(target_frame);
+        setTargetFrames(frames);
+      }
 
   /**
    * \brief Set the frames you need to be able to transform to before getting a message callback
    */
-  void setTargetFrames(const V_string& target_frames)
-  {
-    std::unique_lock<std::mutex> frames_lock(target_frames_mutex_);
+      void setTargetFrames(const V_string& target_frames)
+      {
+        std::unique_lock<std::mutex> frames_lock(target_frames_mutex_);
 
-    target_frames_.resize(target_frames.size());
-    std::transform(target_frames.begin(), target_frames.end(), target_frames_.begin(), this->stripSlash);
-    expected_success_count_ = target_frames_.size() * (time_tolerance_.count() ? 1 : 2);
+        target_frames_.resize(target_frames.size());
+        std::transform(target_frames.begin(), target_frames.end(), target_frames_.begin(), this->stripSlash);
+        expected_success_count_ = target_frames_.size() * (time_tolerance_.nanoseconds() ? 1 : 2);
 
-    std::stringstream ss;
-    for (V_string::iterator it = target_frames_.begin(); it != target_frames_.end(); ++it)
-    {
-      ss << *it << " ";
-    }
-    target_frames_string_ = ss.str();
-  }
+        std::stringstream ss;
+        for (V_string::iterator it = target_frames_.begin(); it != target_frames_.end(); ++it)
+        {
+          ss << *it << " ";
+        }
+        target_frames_string_ = ss.str();
+      }
+
   /**
    * \brief Get the target frames as a string for debugging
    */
-  std::string getTargetFramesString()
-  {
-    std::unique_lock<std::mutex> lock(target_frames_mutex_);
-    return target_frames_string_;
-  };
+      std::string getTargetFramesString()
+      {
+        std::unique_lock<std::mutex> frames_lock(target_frames_mutex_);
+        return target_frames_string_;
+      }
 
   /**
    * \brief Set the required tolerance for the notifier to return true
    */
-  void setTolerance(const tf2::Duration& tolerance)
-  {
-    std::unique_lock<std::mutex> lock(target_frames_mutex_);
-    time_tolerance_ = tolerance;
-    expected_success_count_ = target_frames_.size() * (time_tolerance_.count() ? 1 : 2);
-  }
+      void setTolerance(const rclcpp::Duration& tolerance)
+      {
+        std::unique_lock<std::mutex> frames_lock(target_frames_mutex_);
+        time_tolerance_ = tolerance;
+        expected_success_count_ = target_frames_.size() * (time_tolerance_.nanoseconds() ? 1 : 2);
+      }
 
   /**
    * \brief Clear any messages currently in the queue
    */
-  void clear()
-  {
-    std::unique_lock< std::unique_mutex > unique_lock(messages_mutex_);
-
-    TF2_ROS_MESSAGEFILTER_DEBUG("%s", "Cleared");
-
-    bc_.removeTransformableCallback(callback_handle_);
-    callback_handle_ = bc_.addTransformableCallback(boost::bind(&MessageFilter::transformable,
-			                            this, std::placeholders::_1,
-						    std::placeholders::_2,
-						    std::placeholders::_3,
-						    std::placeholders::_4,
-						    std::placeholders::_5));
-
-    messages_.clear();
-    message_count_ = 0;
-
-    warned_about_empty_frame_id_ = false;
-  }
-
-  void add(const MEvent& evt)
-  {
-    if (target_frames_.empty())
-    {
-      return;
-    }
-
-    namespace mt = message_filters::message_traits;
-    const MConstPtr& message = evt.getMessage();
-    std::string frame_id = stripSlash(mt::FrameId<M>::value(*message));
-    builtin_interfaces::msg::Time stamp = mt::TimeStamp<M>::value(*message);
-
-    if (frame_id.empty())
-    {
-      messageDropped(evt, filter_failure_reasons::EmptyFrameID);
-      return;
-    }
-
-    // iterate through the target frames and add requests for each of them
-    MessageInfo info;
-    info.handles.reserve(expected_success_count_);
-    {
-      V_string target_frames_copy;
-      // Copy target_frames_ to avoid deadlock from #79
+      void clear()
       {
-        std::unique_lock<std::mutex> frames_lock(target_frames_mutex_);
-        target_frames_copy = target_frames_;
+        std::unique_lock< std::mutex > unique_lock(messages_mutex_);
+
+        TF2_ROS_MESSAGEFILTER_DEBUG("%s", "Cleared");
+
+        bc_.removeTransformableCallback(callback_handle_);
+        callback_handle_ = bc_.addTransformableCallback(std::bind(&MessageFilter::transformable,
+				                                        this,
+                                                        std::placeholders::_1,
+           				                                std::placeholders::_2,
+                                                        std::placeholders::_3,
+                                                        std::placeholders::_4,
+                                                        std::placeholders::_5));
+
+        messages_.clear();
+        message_count_ = 0;
+
+        warned_about_empty_frame_id_ = false;
       }
 
-      V_string::iterator it = target_frames_copy.begin();
-      V_string::iterator end = target_frames_copy.end();
-      for (; it != end; ++it)
+      void add(const MEvent& evt)
       {
-        const std::string& target_frame = *it;
-        tf2::TransformableRequestHandle handle = bc_.addTransformableRequest(callback_handle_, target_frame, frame_id, stamp);
-        if (handle == 0xffffffffffffffffULL) // never transformable
+        if (target_frames_.empty())
         {
-          messageDropped(evt, filter_failure_reasons::OutTheBack);
           return;
         }
-        else if (handle == 0)
+
+        namespace mt = message_filters::message_traits;
+        const MConstPtr& message = evt.getMessage();
+        std::string frame_id = stripSlash(mt::FrameId<M>::value(*message));
+        rclcpp::Time stamp = mt::TimeStamp<M>::value(*message);
+
+        if (frame_id.empty())
         {
-          ++info.success_count;
+          messageDropped(evt, filter_failure_reasons::EmptyFrameID);
+          return;
         }
-        else
+
+        // iterate through the target frames and add requests for each of them
+        MessageInfo info;
+        info.handles.reserve(expected_success_count_);
         {
-          info.handles.push_back(handle);
+          V_string target_frames_copy;
+          // Copy target_frames_ to avoid deadlock from #79
+          {
+            std::unique_lock<std::mutex> frames_lock(target_frames_mutex_);
+            target_frames_copy = target_frames_;
+          }
+
+          V_string::iterator it = target_frames_copy.begin();
+          V_string::iterator end = target_frames_copy.end();
+          for (; it != end; ++it) {
+            const std::string& target_frame = *it;
+            tf2::TransformableRequestHandle handle = bc_.addTransformableRequest(callback_handle_, target_frame, frame_id, tf2::timeFromSec(stamp.seconds()));
+            if (handle == 0xffffffffffffffffULL) {
+              // never transformable
+              messageDropped(evt, filter_failure_reasons::OutTheBack);
+              return;
+            } else if (handle == 0) {  
+              ++info.success_count;
+            }
+            else {
+              info.handles.push_back(handle);
+            }
+
+            if (time_tolerance_.nanoseconds()) {
+              handle = bc_.addTransformableRequest(callback_handle_, target_frame, frame_id, tf2::timeFromSec((stamp + time_tolerance_).seconds()));
+              if (handle == 0xffffffffffffffffULL) {
+                // never transformable
+                messageDropped(evt, filter_failure_reasons::OutTheBack);
+                return;
+              }
+              else if (handle == 0) {
+                ++info.success_count;
+              }
+              else {
+                info.handles.push_back(handle);
+              }
+            }
+          }
         }
 
-        if (time_tolerance_.count())
-        {
-          handle = bc_.addTransformableRequest(callback_handle_, target_frame, frame_id, stamp + time_tolerance_);
-          if (handle == 0xffffffffffffffffULL) // never transformable
-          {
-            messageDropped(evt, filter_failure_reasons::OutTheBack);
-            return;
-          }
-          else if (handle == 0)
-          {
-            ++info.success_count;
-          }
-          else
-          {
-            info.handles.push_back(handle);
-          }
+
+        // We can transform already
+        if (info.success_count == expected_success_count_) {
+          messageReady(evt);
         }
-      }
-    }
+        else {
+          // If this message is about to push us past our queue size, erase the oldest message
+          if (queue_size_ != 0 && message_count_ + 1 > queue_size_) {
 
+            // While we're using the reference keep a shared lock on the messages.
+            std::lock_guard< std::mutex > guard_lock(messages_mutex_);
 
-    // We can transform already
-    if (info.success_count == expected_success_count_)
-    {
-      messageReady(evt);
-    }
-    else
-    {
-      // If this message is about to push us past our queue size, erase the oldest message
-      if (queue_size_ != 0 && message_count_ + 1 > queue_size_)
-      {
-        // While we're using the reference keep a shared lock on the messages.
-        boost::shared_lock< boost::shared_mutex > shared_lock(messages_mutex_);
-
-        ++dropped_message_count_;
-        const MessageInfo& front = messages_.front();
-	/*
-        TF2_ROS_MESSAGEFILTER_DEBUG("Removed oldest message because buffer is full, count now %d (frame_id=%s, stamp=%f)", message_count_,
+            ++dropped_message_count_;
+            const MessageInfo& front = messages_.front();
+	        /*
+            TF2_ROS_MESSAGEFILTER_DEBUG("Removed oldest message because buffer is full, count now %d (frame_id=%s, stamp=%f)", message_count_,
                                 (mt::FrameId<M>::value(*front.event.getMessage())).c_str(), mt::TimeStamp<M>::value(*front.event.getMessage()).seconds());
-	*/
+	        */
 
-        V_TransformableRequestHandle::const_iterator it = front.handles.begin();
-        V_TransformableRequestHandle::const_iterator end = front.handles.end();
-        for (; it != end; ++it)
-        {
-          bc_.cancelTransformableRequest(*it);
+            V_TransformableRequestHandle::const_iterator it = front.handles.begin();
+            V_TransformableRequestHandle::const_iterator end = front.handles.end();
+            for (; it != end; ++it) {
+              bc_.cancelTransformableRequest(*it);
+            }
+
+            messageDropped(front.event, filter_failure_reasons::Unknown);
+
+            // Unlock the shared lock and get a unique lock. Upgradeable lock is used in transformable.
+            // There can only be one upgrade lock. It's important the cancelTransformableRequest not deadlock with transformable.
+            // They both require the transformable_requests_mutex_ in BufferCore.
+            // shared_lock.unlock();
+
+            // There is a very slight race condition if an older message arrives in this gap.
+            // std::unique_lock<std::mutex> unique_lock(messages_mutex_);
+            messages_.pop_front();
+            --message_count_;
+          }
+
+          // Add the message to our list
+          info.event = evt;
+
+          // Lock access to the messages_ before modifying them.
+          std::unique_lock<std::mutex> unique_lock(messages_mutex_);
+          messages_.push_back(info);
+          ++message_count_;
         }
 
-        messageDropped(front.event, filter_failure_reasons::Unknown);
-        // Unlock the shared lock and get a unique lock. Upgradeable lock is used in transformable.
-        // There can only be one upgrade lock. It's important the cancelTransformableRequest not deadlock with transformable.
-        // They both require the transformable_requests_mutex_ in BufferCore.
-        shared_lock.unlock();
-        // There is a very slight race condition if an older message arrives in this gap.
-        boost::unique_lock< boost::shared_mutex > unique_lock(messages_mutex_);
-        messages_.pop_front();
-         --message_count_;
+        TF2_ROS_MESSAGEFILTER_DEBUG("Added message in frame %s at time %.3f, count now %d", frame_id.c_str(), stamp.seconds(), message_count_);
+        ++incoming_message_count_;
       }
-
-      // Add the message to our list
-      info.event = evt;
-      // Lock access to the messages_ before modifying them.
-      boost::unique_lock< boost::shared_mutex > unique_lock(messages_mutex_);
-      messages_.push_back(info);
-      ++message_count_;
-    }
-
-    TF2_ROS_MESSAGEFILTER_DEBUG("Added message in frame %s at time %.3f, count now %d", frame_id.c_str(), stamp.seconds(), message_count_);
-
-    ++incoming_message_count_;
-  }
 
   /**
    * \brief Manually add a message into this filter.
    * \note If the message (or any other messages in the queue) are immediately transformable this will immediately call through to the output callback, possibly
    * multiple times
    */
-  void add(const MConstPtr& message)
-  {
-    std::shared_ptr<std::map<std::string, std::string> > header(new std::map<std::string, std::string>);
-    (*header)["callerid"] = "unknown";
-    rclcpp::Time n = rclcpp::Clock::now();
-    builtin_interfaces::msg::Time t(n.sec, n.nanosec);
-    add(MEvent(message, header, t));
-  }
+      void add(const MConstPtr& message)
+      {
+	    using builtin_interfaces::msg::Time;
+        std::shared_ptr<std::map<std::string, std::string> > header(new std::map<std::string, std::string>);
+        (*header)["callerid"] = "unknown";
+        Time t = rclcpp::Clock::now();
+        //builtin_interfaces::msg::Time t(n.sec, n.nanosec);
+        add(MEvent(message, header, t));
+      }
 
   /**
    * \brief Register a callback to be called when a message is about to be dropped
    * \param callback The callback to call
    */
-  message_filters::Connection registerFailureCallback(const FailureCallback& callback)
-  {
-    std::unique_lock<std::mutex> lock(failure_signal_mutex_);
-    return message_filters::Connection(std::bind(&MessageFilter::disconnectFailure, this, std::placeholders::_1), failure_signal_.connect(callback));
-  }
-
-  virtual void setQueueSize( uint32_t new_queue_size )
-  {
-    queue_size_ = new_queue_size;
-  }
-
-  virtual uint32_t getQueueSize()
-  {
-    return queue_size_;
-  }
-
-
-private:
-
-  void init()
-  {
-    message_count_ = 0;
-    successful_transform_count_ = 0;
-    failed_out_the_back_count_ = 0;
-    transform_message_count_ = 0;
-    incoming_message_count_ = 0;
-    dropped_message_count_ = 0;
-    time_tolerance_ = tf2::durationFromSec(0.0);
-    warned_about_empty_frame_id_ = false;
-    expected_success_count_ = 1;
-
-    callback_handle_ = bc_.addTransformableCallback(std::bind(&MessageFilter::transformable,
-			                                      this, std::placeholders::_1,
-							      std::placeholders::_2,
-							      std::placeholders::_3,
-							      std::placeholders::_4,
-							      std::placeholders::_5));
-  }
-
-  void transformable(tf2::TransformableRequestHandle request_handle, const std::string& target_frame, const std::string& source_frame,
-                     builtin_interfaces::msg::Time time, tf2::TransformableResult result)
-  {
-    namespace mt = message_filters::message_traits;
-
-    boost::upgrade_lock< boost::shared_mutex > lock(messages_mutex_);
-
-    // find the message this request is associated with
-    typename L_MessageInfo::iterator msg_it = messages_.begin();
-    typename L_MessageInfo::iterator msg_end = messages_.end();
-    for (; msg_it != msg_end; ++msg_it)
-    {
-      MessageInfo& info = *msg_it;
-      V_TransformableRequestHandle::const_iterator handle_it = std::find(info.handles.begin(), info.handles.end(), request_handle);
-      if (handle_it != info.handles.end())
+      message_filters::Connection registerFailureCallback(const FailureCallback& callback)
       {
-        // found msg_it
-        ++info.success_count;
-        break;
+        message_connection_failure.disconnect();
+        message_connection_failure = this->registerCallback(callback, this);
       }
-    }
 
-    if (msg_it == msg_end)
-    {
-      return;
-    }
 
-    const MessageInfo& info = *msg_it;
-    if (info.success_count < expected_success_count_)
-    {
-      return;
-    }
-
-    bool can_transform = true;
-    const MConstPtr& message = info.event.getMessage();
-    std::string frame_id = stripSlash(mt::FrameId<M>::value(*message));
-    builtin_interfaces::msg::Time stamp = mt::TimeStamp<M>::value(*message);
-
-    if (result == tf2::TransformAvailable)
-    {
-      std::unique_lock<std::mutex> frames_lock(target_frames_mutex_);
-      // make sure we can still perform all the necessary transforms
-      typename V_string::iterator it = target_frames_.begin();
-      typename V_string::iterator end = target_frames_.end();
-      for (; it != end; ++it)
+      virtual void setQueueSize( uint32_t new_queue_size )
       {
-        const std::string& target = *it;
-        if (!bc_.canTransform(target, frame_id, stamp))
-        {
-          can_transform = false;
-          break;
-        }
+        queue_size_ = new_queue_size;
+      }
 
-        if (time_tolerance_.count())
-        {
-          if (!bc_.canTransform(target, frame_id, stamp + time_tolerance_))
-          {
-            can_transform = false;
+      virtual uint32_t getQueueSize()
+      {
+        return queue_size_;
+      }
+      
+    private:
+      ///< The Transformer used to determine if transformation data is available
+      tf2::BufferCore& bc_;
+      ///< The frames we need to be able to transform to before a message is ready
+      V_string target_frames_;
+      std::string target_frames_string_;
+      ///< A mutex to protect access to the target_frames_ list and target_frames_string.
+      std::mutex target_frames_mutex_;
+      ///< The maximum number of messages we queue up
+      uint32_t queue_size_; 
+      tf2::TransformableCallbackHandle callback_handle_;
+
+      typedef std::vector<tf2::TransformableRequestHandle> V_TransformableRequestHandle;
+      struct MessageInfo
+      {
+        MessageInfo(): success_count(0) {}
+
+        MEvent event;
+        V_TransformableRequestHandle handles;
+        uint32_t success_count;
+      };
+      typedef std::list<MessageInfo> L_MessageInfo;
+      L_MessageInfo messages_;
+  
+      ///< The number of messages in the list.  Used because \<container\>.size() may have linear cost
+      uint32_t message_count_;
+      ///< The mutex used for locking message list operations
+      std::mutex messages_mutex_;
+      uint32_t expected_success_count_;
+
+      bool warned_about_empty_frame_id_;
+
+      uint64_t successful_transform_count_;
+      uint64_t failed_out_the_back_count_;
+      uint64_t transform_message_count_;
+      uint64_t incoming_message_count_;
+      uint64_t dropped_message_count_;
+
+      rclcpp::Time last_out_the_back_stamp_;
+      std::string last_out_the_back_frame_;
+
+      rclcpp::Time next_failure_warning_;
+
+      ///< Provide additional tolerance on time for messages which are stamped but can have associated duration
+      rclcpp::Duration time_tolerance_ = rclcpp::Duration(0,0);
+
+      message_filters::Connection message_connection_;
+      message_filters::Connection message_connection_failure;
+ 
+      void init()
+      {
+        message_count_ = 0;
+        successful_transform_count_ = 0;
+        failed_out_the_back_count_ = 0;
+        transform_message_count_ = 0;
+        incoming_message_count_ = 0;
+        dropped_message_count_ = 0;
+        time_tolerance_ = rclcpp::Duration(0, 0);
+        warned_about_empty_frame_id_ = false;
+        expected_success_count_ = 1;
+
+        callback_handle_ = bc_.addTransformableCallback(std::bind(&MessageFilter::transformable,
+				                                  this,
+                                                                  std::placeholders::_1,
+							          std::placeholders::_2,
+							          std::placeholders::_3,
+							          std::placeholders::_4,
+							          std::placeholders::_5));
+      }
+
+      void transformable(tf2::TransformableRequestHandle request_handle, const std::string& target_frame, const std::string& source_frame,
+                     tf2::TimePoint time, tf2::TransformableResult result)
+      {
+        namespace mt = message_filters::message_traits;
+
+        // find the message this request is associated with
+        typename L_MessageInfo::iterator msg_it = messages_.begin();
+        typename L_MessageInfo::iterator msg_end = messages_.end();
+        for (; msg_it != msg_end; ++msg_it) {
+          MessageInfo& info = *msg_it;
+          V_TransformableRequestHandle::const_iterator handle_it = std::find(info.handles.begin(), info.handles.end(), request_handle);
+          if (handle_it != info.handles.end()) {
+            // found msg_it
+            ++info.success_count;
             break;
           }
         }
+
+        if (msg_it == msg_end) {
+          return;
+        }
+
+        const MessageInfo& info = *msg_it;
+        if (info.success_count < expected_success_count_) {
+          return;
+        }
+
+        bool can_transform = true;
+        const MConstPtr& message = info.event.getMessage();
+        std::string frame_id = stripSlash(mt::FrameId<M>::value(*message));
+        rclcpp::Time stamp = mt::TimeStamp<M>::value(*message);
+
+        if (result == tf2::TransformAvailable) {
+          std::unique_lock<std::mutex> frames_lock(target_frames_mutex_);
+          // make sure we can still perform all the necessary transforms
+          typename V_string::iterator it = target_frames_.begin();
+          typename V_string::iterator end = target_frames_.end();
+          for (; it != end; ++it)
+          {
+            const std::string& target = *it;
+            if (!bc_.canTransform(target, frame_id, tf2::timeFromSec(stamp.seconds()))) {
+              can_transform = false;
+              break;
+            }
+
+            if (time_tolerance_.nanoseconds()) {
+              if (!bc_.canTransform(target, frame_id, tf2::timeFromSec((stamp + time_tolerance_).seconds()))) {
+                can_transform = false;
+                break;
+              }
+            }
+          }
+        } else {
+          can_transform = false;
+        }
+
+        // We will be mutating messages now, require unique lock
+        std::unique_lock<std::mutex> lock(messages_mutex_);
+        if (can_transform) {
+          TF2_ROS_MESSAGEFILTER_DEBUG("Message ready in frame %s at time %.3f, count now %d", frame_id.c_str(), stamp.seconds(), message_count_ - 1);
+
+          ++successful_transform_count_;
+          messageReady(info.event);
+        } else {
+          ++dropped_message_count_;
+
+          TF2_ROS_MESSAGEFILTER_DEBUG("Discarding message in frame %s at time %.3f, count now %d", frame_id.c_str(), stamp.seconds(), message_count_ - 1);
+          messageDropped(info.event, filter_failure_reasons::Unknown);
+        }
+
+        messages_.erase(msg_it);
+        --message_count_;
       }
-    }
-    else
-    {
-      can_transform = false;
-    }
-
-    // We will be mutating messages now, require unique lock
-    boost::upgrade_to_unique_lock< boost::shared_mutex > uniqueLock(lock);
-    if (can_transform)
-    {
-      TF2_ROS_MESSAGEFILTER_DEBUG("Message ready in frame %s at time %.3f, count now %d", frame_id.c_str(), stamp.seconds(), message_count_ - 1);
-
-      ++successful_transform_count_;
-
-      messageReady(info.event);
-
-    }
-    else
-    {
-      ++dropped_message_count_;
-
-      TF2_ROS_MESSAGEFILTER_DEBUG("Discarding message in frame %s at time %.3f, count now %d", frame_id.c_str(), stamp.seconds(), message_count_ - 1);
-      messageDropped(info.event, filter_failure_reasons::Unknown);
-    }
-
-    messages_.erase(msg_it);
-    --message_count_;
-  }
 
   /**
    * \brief Callback that happens when we receive a message on the message topic
    */
-  void incomingMessage(const message_filters::MessageEvent<M const>& evt)
-  {
-    add(evt);
-  }
-
-  void checkFailures()
-  {
-    if (!next_failure_warning_.nanoseconds())
-    {
-      next_failure_warning_ = rclcpp::Clock::now() + rclcpp::Duration(15,0);
-    }
-
-    if (rclcpp::Clock::now() >= next_failure_warning_)
-    {
-      if (incoming_message_count_ - message_count_ == 0)
-      {
-        return;
+      void incomingMessage(const message_filters::MessageEvent<M const>& evt) {
+        add(evt);
       }
 
-      double dropped_pct = (double)dropped_message_count_ / (double)(incoming_message_count_ - message_count_);
-      if (dropped_pct > 0.95)
-      {
-        TF2_ROS_MESSAGEFILTER_WARN("Dropped %.2f%% of messages so far. Please turn the [%s.message_notifier] rosconsole logger to DEBUG for more information.", dropped_pct*100, ROSCONSOLE_DEFAULT_NAME);
-        next_failure_warning_ = rclcpp::Clock::now() + rclcpp::Duration(60,0);
+      void checkFailures() {
+        if (!next_failure_warning_.nanoseconds()) {
+          next_failure_warning_ = rclcpp::Clock::now() + rclcpp::Duration(15,0);
+        }
 
-        if ((double)failed_out_the_back_count_ / (double)dropped_message_count_ > 0.5)
-        {
-          TF2_ROS_MESSAGEFILTER_WARN("  The majority of dropped messages were due to messages growing older than the TF cache time.  The last message's timestamp was: %f, and the last frame_id was: %s", last_out_the_back_stamp_.seconds(), last_out_the_back_frame_.c_str());
+        if (rclcpp::Clock::now() >= next_failure_warning_) {
+          if (incoming_message_count_ - message_count_ == 0) {
+            return;
+          }
+
+          double dropped_pct = (double)dropped_message_count_ / (double)(incoming_message_count_ - message_count_);
+          if (dropped_pct > 0.95) {
+            TF2_ROS_MESSAGEFILTER_WARN("Dropped %.2f%% of messages so far. Please turn the [%s.message_notifier] rosconsole logger to DEBUG for more information.", dropped_pct*100, "tf2_ros_message_filter");
+            next_failure_warning_ = rclcpp::Clock::now() + rclcpp::Duration(60,0);
+
+            if ((double)failed_out_the_back_count_ / (double)dropped_message_count_ > 0.5) {
+              TF2_ROS_MESSAGEFILTER_WARN("  The majority of dropped messages were due to messages growing older than the TF cache time.  The last message's timestamp was: %f, and the last frame_id was: %s", last_out_the_back_stamp_.seconds(), last_out_the_back_frame_.c_str());
+            }
+          }
         }
       }
-    }
-  }
 
-  #if 0
-  struct CBQueueCallback : public ros::CallbackInterface
-  {
-    CBQueueCallback(MessageFilter* filter, const MEvent& event, bool success, FilterFailureReason reason)
-    : event_(event)
-    , filter_(filter)
-    , reason_(reason)
-    , success_(success)
-    {}
-
-
-    virtual CallResult call()
-    {
-      if (success_)
-      {
-        filter_->signalMessage(event_);
-      }
-      else
-      {
-        filter_->signalFailure(event_, reason_);
+      void messageDropped(const MEvent& evt, FilterFailureReason reason) {
+          signalFailure(evt, reason);
       }
 
-      return Success;
-    }
+      void messageReady(const MEvent& evt)
+      {
+          this->signalMessage(evt);
+      }
 
-  private:
-    MEvent event_;
-    MessageFilter* filter_;
-    FilterFailureReason reason_;
-    bool success_;
+      void signalFailure(const MEvent& evt, FilterFailureReason reason) {
+        this->signalMessage(evt, reason);
+      }
+
+      static std::string stripSlash(const std::string& in) {
+      if ( !in.empty() && (in[0] == '/')) {
+          std::string out = in;
+          out.erase(0, 1);
+          return out;
+      }
+
+        return in;
+      }
   };
-
-  #endif
-
-  void messageDropped(const MEvent& evt, FilterFailureReason reason)
-  {
-    if (callback_queue_)
-    {
-      #if 0
-      ros::CallbackInterfacePtr cb(new CBQueueCallback(this, evt, false, reason));
-      callback_queue_->addCallback(cb, (uint64_t)this);
-      #endif
-      TF2_ROS_MESSAGEFILTER_WARN("[TODO]: Add callback to callback queue of node")
-    }
-    else
-    {
-      signalFailure(evt, reason);
-    }
-  }
-
-  void messageReady(const MEvent& evt)
-  {
-    if (callback_queue_)
-    {
-      #if 0
-      ros::CallbackInterfacePtr cb(new CBQueueCallback(this, evt, true, filter_failure_reasons::Unknown));
-      callback_queue_->addCallback(cb, (uint64_t)this);
-      #endif
-      TF2_ROS_MESSAGEFILTER_WARN("[TODO]: Add callback to callback queue of node")
-    }
-    else
-    {
-      this->signalMessage(evt);
-    }
-  }
-
-  void disconnectFailure(const message_filters::Connection& c)
-  {
-    std::unique_lock<std::mutex> lock(failure_signal_mutex_);
-    c.getBoostConnection().disconnect();
-  }
-
-  void signalFailure(const MEvent& evt, FilterFailureReason reason)
-  {
-    std::unique_lock<std::mutex> lock(failure_signal_mutex_);
-    failure_signal_(evt.getMessage(), reason);
-  }
-
-  static
-  std::string stripSlash(const std::string& in)
-  {
-    if ( !in.empty() && (in[0] == '/'))
-    {
-      std::string out = in;
-      out.erase(0, 1);
-      return out;
-    }
-    return in;
-  }
-
-  tf2::BufferCore& bc_; ///< The Transformer used to determine if transformation data is available
-  V_string target_frames_; ///< The frames we need to be able to transform to before a message is ready
-  std::string target_frames_string_;
-  std::mutex target_frames_mutex_; ///< A mutex to protect access to the target_frames_ list and target_frames_string.
-  uint32_t queue_size_; ///< The maximum number of messages we queue up
-  tf2::TransformableCallbackHandle callback_handle_;
-
-  typedef std::vector<tf2::TransformableRequestHandle> V_TransformableRequestHandle;
-  struct MessageInfo
-  {
-    MessageInfo()
-    : success_count(0)
-    {}
-
-    MEvent event;
-    V_TransformableRequestHandle handles;
-    uint32_t success_count;
-  };
-  typedef std::list<MessageInfo> L_MessageInfo;
-  L_MessageInfo messages_;
-  uint32_t message_count_; ///< The number of messages in the list.  Used because \<container\>.size() may have linear cost
-  boost::shared_mutex messages_mutex_; ///< The mutex used for locking message list operations
-  uint32_t expected_success_count_;
-
-  bool warned_about_empty_frame_id_;
-
-  uint64_t successful_transform_count_;
-  uint64_t failed_out_the_back_count_;
-  uint64_t transform_message_count_;
-  uint64_t incoming_message_count_;
-  uint64_t dropped_message_count_;
-
-  rclcpp::Time last_out_the_back_stamp_;
-  std::string last_out_the_back_frame_;
-
-  rclcpp::Time next_failure_warning_;
-
-  tf2::Duration time_tolerance_; ///< Provide additional tolerance on time for messages which are stamped but can have associated duration
-
-  message_filters::Connection message_connection_;
-
-  FailureSignal failure_signal_;
-  std::mutex failure_signal_mutex_;
-
-  //ros::CallbackQueueInterface* callback_queue_;
-};
-
 } // namespace tf2
 
 #endif
