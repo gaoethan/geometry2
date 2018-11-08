@@ -38,31 +38,15 @@
 #include <tf2_ros/static_transform_broadcaster.h>
 #include <tf2_ros/transform_listener.h>
 
-#include <gtest/gtest.h>
-
-
-void spin_for_a_second(rclcpp::Node::SharedPtr node)
-{
-  //ros::spinOnce();
-  rclcpp::spin_some(node);
-  for (uint8_t i = 0; i < 10; ++i)
-  {
-    usleep(100);
-    //ros::spinOnce();
-    rclcpp::spin_some(node);
-  }
-}
-
-bool filter_callback_fired = false;
+uint8_t filter_callback_fired = 0;
 void filter_callback(const geometry_msgs::msg::PointStamped& msg)
 {
-  filter_callback_fired = true;
+  filter_callback_fired++;
 }
 
-TEST(tf2_ros_message_filter, multiple_frames_and_time_tolerance)
-{
-  //ros::NodeHandle nh;
-  auto node = rclcpp::Node::make_shared("tf2_ros_message_filter");
+int main(int argc, char **argv) {
+   rclcpp::init(argc, argv);
+   auto node = rclcpp::Node::make_shared("tf2_ros_message_filter_p");
 
   message_filters::Subscriber<geometry_msgs::msg::PointStamped> sub;
   sub.subscribe(node, "point");
@@ -73,6 +57,7 @@ TEST(tf2_ros_message_filter, multiple_frames_and_time_tolerance)
   tf2_ros::MessageFilter<geometry_msgs::msg::PointStamped> filter(buffer, "map", 10, node);
   filter.connectInput(sub);
   filter.registerCallback(&filter_callback);
+  
   // Register multiple target frames
   std::vector<std::string> frames;
   frames.push_back("odom");
@@ -108,24 +93,25 @@ TEST(tf2_ros_message_filter, multiple_frames_and_time_tolerance)
   odom_to_base.transform.rotation.z = 0.0;
   odom_to_base.transform.rotation.w = 1.0;
   tfb.sendTransform(odom_to_base);
-
-  // Publish a Point message in the "base" frame
+  
   rclcpp::Publisher<geometry_msgs::msg::PointStamped>::SharedPtr pub;
   pub =  node->create_publisher<geometry_msgs::msg::PointStamped>("point");
   geometry_msgs::msg::PointStamped point;
   point.header.stamp = rclcpp::Clock().now();
   point.header.frame_id = "base";
+  point.point.x = 0.1;
+  point.point.y = 0.2;
+  point.point.z = 0.3;
   pub->publish(point);
 
-  // make sure it arrives
-  spin_for_a_second(node);
+  rclcpp::WallRate loop_rate(1);
+  while (rclcpp::ok()) {
+    rclcpp::spin_some(node);
+    loop_rate.sleep();
+    
+    RCLCPP_INFO(node->get_logger(), "filter callback: trigger(%d)", filter_callback_fired);
+  }
 
-  // The filter callback should have been fired because all required transforms are available
-  ASSERT_TRUE(filter_callback_fired);
-}
-
-int main(int argc, char **argv) {
-  testing::InitGoogleTest(&argc, argv);
-  rclcpp::init(argc, argv);
-  return RUN_ALL_TESTS();
+  rclcpp::shutdown();
+  return 0;
 }

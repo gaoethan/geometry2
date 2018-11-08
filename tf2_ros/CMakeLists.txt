@@ -20,8 +20,6 @@ find_package(rclcpp REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_msgs REQUIRED)
 
-find_package(Boost REQUIRED)
-
 find_package(rmw)
 
 include_directories(include
@@ -52,7 +50,6 @@ target_link_libraries(${PROJECT_NAME}
   ${rmw_implementation_LIBRARIES}
   ${tf2_LIBRARIES}
   ${tf2_msgs_LIBRARIES}
-  ${Boost_LIBRARIES}
   )
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE "TF2_ROS_BUILDING_DLL")
@@ -139,7 +136,7 @@ if(BUILD_TESTING)
   # Adds a tf2_ros message_filter unittest that uses
   # multiple target frames and a non-zero time tolerance
   ament_add_gtest(${PROJECT_NAME}_test_message_filter test/message_filter_test.cpp)
-  target_link_libraries(${PROJECT_NAME}_test_message_filter ${PROJECT_NAME} ${Boost_LIBRARIES})
+  target_link_libraries(${PROJECT_NAME}_test_message_filter ${PROJECT_NAME})
 
 # TODO(tfoote) port tests to use ROS2 instead of ROS1 api.
 if (false)
@@ -158,8 +155,6 @@ find_package(catkin REQUIRED COMPONENTS
   tf2_msgs
   ${TF2_PY}
 )
-
-
 
 # tf2_ros_test_listener
 add_executable(${PROJECT_NAME}_test_listener EXCLUDE_FROM_ALL test/listener_unittest.cpp)
